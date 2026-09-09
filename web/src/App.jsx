@@ -128,7 +128,7 @@ function Stream({ stream, instanceId }) {
   return (
     <li className="card" data-idle={stream.clientCount === 0}>
       <div className="card-head">
-        <div className="thumb">
+        <div className={stream.logo ? 'thumb has-logo' : 'thumb'}>
           {stream.logo ? (
             <img src={`/api/logo/${instanceId}/${stream.channelId}`} alt="" loading="lazy" />
           ) : (

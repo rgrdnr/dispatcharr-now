@@ -42,6 +42,15 @@ body {
   padding: 0 0.85rem 2.5rem;
 }
 
+/* Phones/narrow windows keep the single-column layout above as-is. Past
+   this width there's room for the stream cards to sit side by side. */
+@media (min-width: 720px) {
+  #root {
+    max-width: 74rem;
+    padding: 0 1.5rem 3rem;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--live);
   outline-offset: 3px;
@@ -296,6 +305,14 @@ body {
   padding: 0;
 }
 
+@media (min-width: 720px) {
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    align-items: start;
+  }
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--edge);
@@ -315,7 +332,7 @@ body {
 
 .thumb {
   flex: 0 0 auto;
-  width: 96px;
+  width: 54px;
   height: 54px;
   border-radius: 6px;
   overflow: hidden;
@@ -325,10 +342,19 @@ body {
   border: 1px solid var(--edge);
 }
 
+/* Most channel logos (sports especially) are square art on a solid white
+   background, not transparent — a dark tile behind them looks like a
+   rendering glitch. Only the logo-image case gets a light backing; the
+   text-fallback tile keeps the dark theme. */
+.thumb.has-logo {
+  background: #f4f4f4;
+}
+
 .thumb img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  padding: 4px;
 }
 
 .thumb span {
@@ -581,8 +607,9 @@ body {
   display: flex;
   flex-direction: column;
   list-style: none;
-  margin: 0;
+  margin: 0 auto;
   padding: 0;
+  max-width: 40rem;
 }
 
 .history-row {
@@ -661,7 +688,8 @@ body {
 /* ---------- states ---------- */
 
 .notice {
-  margin-top: 1.5rem;
+  max-width: 40rem;
+  margin: 1.5rem auto 0;
   padding: 1.1rem;
   border: 1px solid var(--edge);
   border-radius: 10px;
@@ -714,7 +742,8 @@ button.retry:active {
 /* ---------- settings ---------- */
 
 .section-title {
-  margin: 0 0 0.8rem;
+  max-width: 40rem;
+  margin: 0 auto 0.8rem;
   font-size: 1rem;
   font-weight: 600;
 }
@@ -724,7 +753,8 @@ button.retry:active {
   flex-direction: column;
   gap: 0.5rem;
   list-style: none;
-  margin: 0 0 0.9rem;
+  max-width: 40rem;
+  margin: 0 auto 0.9rem;
   padding: 0;
 }
 
@@ -812,7 +842,10 @@ button.retry:active {
 }
 
 .btn.add-instance {
+  display: block;
   width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
   padding: 0.65rem;
 }
 
@@ -820,6 +853,8 @@ button.retry:active {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
+  max-width: 40rem;
+  margin: 0 auto;
   background: var(--panel);
   border: 1px solid var(--edge);
   border-radius: 10px;
