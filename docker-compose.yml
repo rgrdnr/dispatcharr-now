@@ -7,3 +7,8 @@ services:
       - "8790:8790"
     env_file:
       - .env
+    volumes:
+      - dispatcharr-now-data:/app/server/data
+
+volumes:
+  dispatcharr-now-data:
