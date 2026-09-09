@@ -7,19 +7,13 @@ import * as store from './instances.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const {
-  DISPATCHARR_URL = 'http://192.168.1.100:9090',
-  DISPATCHARR_USER,
-  DISPATCHARR_PASS,
-  PORT = 8790,
-  POLL_MIN_MS = 2000,
-} = process.env;
+const { DISPATCHARR_URL, DISPATCHARR_USER, DISPATCHARR_PASS, PORT = 8790, POLL_MIN_MS = 2000 } = process.env;
 
 // One-time migration: a fresh install with the old single-instance .env
 // still works out of the box — it becomes instance zero. Everything after
 // this point is configured through /api/instances (and the Settings page),
 // not env vars.
-if (!store.exists() && DISPATCHARR_USER && DISPATCHARR_PASS) {
+if (!store.exists() && DISPATCHARR_URL && DISPATCHARR_USER && DISPATCHARR_PASS) {
   store.add({ name: 'Primary', url: DISPATCHARR_URL, username: DISPATCHARR_USER, password: DISPATCHARR_PASS });
 }
 

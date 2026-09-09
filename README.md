@@ -25,7 +25,7 @@ stats endpoints.
 ## Local development
 
 ```bash
-cd server && npm install && DISPATCHARR_URL=http://192.168.1.100:9090 \
+cd server && npm install && DISPATCHARR_URL=http://<dispatcharr-host>:<port> \
   DISPATCHARR_USER=admin DISPATCHARR_PASS=... npm run dev
 cd web && npm install && npm run dev     # proxies /api to :8790
 ```
@@ -54,7 +54,7 @@ That returns the untouched upstream payload plus which path served it. If a fiel
 shows as null in the UI, add its real key to the alias list in
 `server/src/dispatcharr.js` — everything funnels through `normalizeStatus()`.
 
-Your Swagger UI at `http://192.168.1.100:9090/swagger/` is the authoritative
+Your Swagger UI at `http://<dispatcharr-host>:<port>/swagger/` is the authoritative
 reference for your build.
 
 ## Design notes
