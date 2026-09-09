@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const POLL_MS = 5000;
 const HISTORY_POLL_MS = 20000;
+const ORDER_KEY = 'onnow.instanceOrder';
+const COLLAPSED_KEY = 'onnow.collapsedInstances';
 
 const NAV_ITEMS = [
   { id: 'live', label: 'Live' },
@@ -241,9 +243,130 @@ function Stream({ stream, instanceId }) {
   );
 }
 
+function loadOrder() {
+  try {
+    const raw = localStorage.getItem(ORDER_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOrder(order) {
+  try {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // private browsing / storage disabled — reordering just won't persist
+  }
+}
+
+/** Apply a saved id order to the live instance list. New instances (not in the saved order) land at the end; removed ones just vanish. */
+function applyOrder(instances, order) {
+  const byId = new Map(instances.map((i) => [i.id, i]));
+  const ordered = order.map((id) => byId.get(id)).filter(Boolean);
+  const seen = new Set(ordered.map((i) => i.id));
+  for (const inst of instances) {
+    if (!seen.has(inst.id)) ordered.push(inst);
+  }
+  return ordered;
+}
+
+function loadCollapsed() {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(collapsed) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+  } catch {
+    // private browsing / storage disabled — collapse state just won't persist
+  }
+}
+
 function LiveView({ data, error, staleSince, onRetry }) {
   const totals = data?.totals;
-  const instances = data?.instances || [];
+  const rawInstances = data?.instances || [];
+
+  const [order, setOrder] = useState(loadOrder);
+  useEffect(() => saveOrder(order), [order]);
+  const instances = useMemo(() => applyOrder(rawInstances, order), [rawInstances, order]);
+  const groupRefs = useRef(new Map());
+  const [draggingId, setDraggingId] = useState(null);
+  const instancesRef = useRef(instances);
+  instancesRef.current = instances;
+
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  useEffect(() => saveCollapsed(collapsed), [collapsed]);
+  const toggleCollapsed = (id) => (e) => {
+    e.stopPropagation();
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const reorder = useCallback(
+    (id, toIndex) => {
+      setOrder((prevOrder) => {
+        const current = applyOrder(rawInstances, prevOrder).map((i) => i.id);
+        const fromIndex = current.indexOf(id);
+        if (fromIndex === -1 || fromIndex === toIndex) return prevOrder;
+        const next = [...current];
+        next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, id);
+        return next;
+      });
+    },
+    [rawInstances]
+  );
+  const reorderRef = useRef(reorder);
+  reorderRef.current = reorder;
+
+  // Tracked on window, not the dragged element: a live reorder physically
+  // moves that element's DOM node (React reconciles the new key order), and
+  // moving a node mid-gesture can silently drop native pointer capture —
+  // the drag would then look "stuck" since pointerup never fires on it.
+  useEffect(() => {
+    if (!draggingId) return;
+
+    const handleMove = (e) => {
+      const y = e.clientY;
+      const list = instancesRef.current;
+      let toIndex = list.length - 1;
+      for (let i = 0; i < list.length; i++) {
+        const el = groupRefs.current.get(list[i].id);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (y < rect.top + rect.height / 2) {
+          toIndex = i;
+          break;
+        }
+      }
+      reorderRef.current(draggingId, toIndex);
+    };
+
+    const handleEnd = () => setDraggingId(null);
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleEnd);
+    window.addEventListener('pointercancel', handleEnd);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleEnd);
+      window.removeEventListener('pointercancel', handleEnd);
+    };
+  }, [draggingId]);
+
+  const startDrag = (id) => () => setDraggingId(id);
 
   return (
     <>
@@ -266,8 +389,42 @@ function LiveView({ data, error, staleSince, onRetry }) {
       {instances.length > 0 && (
         <div className="instances">
           {instances.map((inst) => (
-            <section key={inst.id} className="instance-group">
-              <div className="instance-head">
+            <section
+              key={inst.id}
+              ref={(el) => {
+                if (el) groupRefs.current.set(inst.id, el);
+                else groupRefs.current.delete(inst.id);
+              }}
+              className="instance-group"
+              data-dragging={draggingId === inst.id}
+            >
+              <div
+                className="instance-head"
+                data-reorderable={instances.length > 1}
+                onPointerDown={instances.length > 1 ? startDrag(inst.id) : undefined}
+                onDoubleClick={toggleCollapsed(inst.id)}
+              >
+                <button
+                  type="button"
+                  className="collapse-toggle"
+                  aria-label={collapsed.has(inst.id) ? `Expand ${inst.name}` : `Collapse ${inst.name}`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={toggleCollapsed(inst.id)}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                >
+                  <svg
+                    className="chevron"
+                    data-collapsed={collapsed.has(inst.id)}
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
                 <span className="pulse-sm" data-state={inst.ok ? 'live' : 'down'} aria-hidden="true" />
                 <span className="instance-name">{inst.name}</span>
                 {inst.ok && (
@@ -276,11 +433,21 @@ function LiveView({ data, error, staleSince, onRetry }) {
                     {inst.totals.clients} {inst.totals.clients === 1 ? 'viewer' : 'viewers'}
                   </span>
                 )}
+                {instances.length > 1 && (
+                  <svg className="grip" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="9" cy="6" r="1.6" />
+                    <circle cx="15" cy="6" r="1.6" />
+                    <circle cx="9" cy="12" r="1.6" />
+                    <circle cx="15" cy="12" r="1.6" />
+                    <circle cx="9" cy="18" r="1.6" />
+                    <circle cx="15" cy="18" r="1.6" />
+                  </svg>
+                )}
               </div>
 
-              {!inst.ok && <p className="instance-error">{inst.error}</p>}
+              {!collapsed.has(inst.id) && !inst.ok && <p className="instance-error">{inst.error}</p>}
 
-              {inst.ok && inst.streams.length > 0 && (
+              {!collapsed.has(inst.id) && inst.ok && inst.streams.length > 0 && (
                 <ul className="cards">
                   {inst.streams.map((s) => (
                     <Stream key={s.key} stream={s} instanceId={inst.id} />
@@ -288,7 +455,9 @@ function LiveView({ data, error, staleSince, onRetry }) {
                 </ul>
               )}
 
-              {inst.ok && inst.streams.length === 0 && <p className="instance-empty">Nothing playing</p>}
+              {!collapsed.has(inst.id) && inst.ok && inst.streams.length === 0 && (
+                <p className="instance-empty">Nothing playing</p>
+              )}
             </section>
           ))}
         </div>

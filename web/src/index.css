@@ -189,8 +189,57 @@ body {
 
 .instance-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
+  padding: 0.15rem 0;
+  user-select: none;
+}
+
+.collapse-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin-left: -0.3rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.collapse-toggle:active {
+  background: var(--panel-lift);
+}
+
+.chevron {
+  transition: transform 150ms ease;
+}
+
+.chevron[data-collapsed='true'] {
+  transform: rotate(-90deg);
+}
+
+.instance-head[data-reorderable='true'] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.instance-group[data-dragging='true'] {
+  opacity: 0.55;
+}
+
+.instance-group[data-dragging='true'] .instance-head {
+  cursor: grabbing;
+}
+
+.grip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--dim-2);
 }
 
 .pulse-sm {
