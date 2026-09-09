@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const POLL_MS = 5000;
+const HISTORY_POLL_MS = 20000;
+
+const NAV_ITEMS = [
+  { id: 'live', label: 'Live' },
+  { id: 'history', label: 'History' },
+  { id: 'settings', label: 'Settings' },
+];
 
 const clock = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -18,6 +25,12 @@ function mbps(kbps) {
   return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${Math.round(kbps)} kbps`;
 }
 
+function gigabytes(bytes) {
+  if (!Number.isFinite(bytes)) return null;
+  const gb = bytes / 1e9;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
 /** How far through the current programme we are, 0–100. */
 function elapsedPercent(program) {
   if (!program?.start || !program?.end) return 0;
@@ -28,84 +41,602 @@ function elapsedPercent(program) {
   return Math.max(0, Math.min(100, pct));
 }
 
+function timeLeft(end) {
+  if (!end) return null;
+  const ms = new Date(end).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return duration(ms / 1000);
+}
+
 function health(stream) {
   if (stream.state.includes('error') || stream.state.includes('fail')) return 'fault';
   if (stream.buffering || stream.state.includes('connect')) return 'warn';
   return 'ok';
 }
 
-function Stream({ stream }) {
+/**
+ * Best-effort label from a raw User-Agent string — Dispatcharr doesn't hand
+ * us a parsed app/OS, just whatever the client sent. Falls back to a
+ * trimmed slice of the real string rather than guessing when nothing matches.
+ */
+function parseAgent(ua) {
+  if (!ua) return null;
+  const app = /Edg\//.test(ua)
+    ? 'Edge'
+    : /Chrome\//.test(ua)
+      ? 'Chrome'
+      : /Firefox\//.test(ua)
+        ? 'Firefox'
+        : /Safari\//.test(ua) && !/Chrome/.test(ua)
+          ? 'Safari'
+          : /VLC/i.test(ua)
+            ? 'VLC'
+            : /Kodi/i.test(ua)
+              ? 'Kodi'
+              : /channels-dvr/i.test(ua)
+                ? 'Channels DVR'
+                : null;
+  const os = /Windows/.test(ua)
+    ? 'Windows'
+    : /Mac OS X|Macintosh/.test(ua)
+      ? 'macOS'
+      : /iPhone|iPad|iOS/.test(ua)
+        ? 'iOS'
+        : /Android/.test(ua)
+          ? 'Android'
+          : /Linux/.test(ua)
+            ? 'Linux'
+            : null;
+  if (app && os) return `${app} — ${os}`;
+  if (app) return app;
+  return ua.length > 30 ? `${ua.slice(0, 30)}…` : ua;
+}
+
+function avatarColor(seed) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+  return `hsl(${h}, 42%, 42%)`;
+}
+
+/** 'relay' | 'transcode' | 'unknown' -> a chip, or null to hide the line entirely. */
+function relayLabel(kind) {
+  if (kind === 'relay') return { text: 'Direct Relay', tone: 'ok' };
+  if (kind === 'transcode') return { text: 'Transcode', tone: 'warn' };
+  return null;
+}
+
+function Stream({ stream, instanceId }) {
   const pct = elapsedPercent(stream.program);
+  const left = timeLeft(stream.program?.end);
   const bar = health(stream);
-  // Meter is scaled against 12 Mbps, roughly a good HD feed.
-  const level = Math.min(100, ((stream.bitrateKbps || 0) / 12000) * 100);
+  const primary = stream.clients[0] || null;
+  const extra = stream.clients.length - 1;
+
+  const device = primary ? parseAgent(primary.userAgent) : null;
+  const connection = primary?.local === true ? 'Local' : primary?.local === false ? 'Remote' : null;
+  const upFor = duration(primary?.connectedSec ?? stream.uptimeSec);
+
+  const video = stream.resolution || stream.videoCodec ? [stream.resolution, stream.videoCodec].filter(Boolean).join(' ') : null;
+  const audio = [stream.audioCodec, stream.audioChannels].filter(Boolean).join(' · ') || null;
+  const speed = Number.isFinite(stream.encodeSpeed) ? stream.encodeSpeed : null;
+  const speedBehind = speed != null && speed < 1;
+  const videoRelay = relayLabel(stream.relay?.video);
+  const audioRelay = relayLabel(stream.relay?.audio);
 
   return (
-    <li
-      className="row"
-      data-idle={stream.clientCount === 0}
-      style={{ '--elapsed': `${pct}%` }}
-    >
-      <div className="head">
-        <div className="badge">
+    <li className="card" data-idle={stream.clientCount === 0}>
+      <div className="card-head">
+        <div className="thumb">
           {stream.logo ? (
-            <img src={`/api/logo/${stream.channelId}`} alt="" loading="lazy" />
+            <img src={`/api/logo/${instanceId}/${stream.channelId}`} alt="" loading="lazy" />
           ) : (
             <span>{stream.number ?? stream.name.slice(0, 2)}</span>
           )}
         </div>
-
         <div className="title">
-          <h2 className="channel">{stream.name}</h2>
-          <p className="programme">
-            {stream.program?.title ? (
-              <>
-                {stream.program.title}
-                {stream.program.end ? ` until ${clock(stream.program.end)}` : ''}
-              </>
-            ) : (
-              <em>No guide data</em>
-            )}
+          <h2 className="channel">{stream.program?.title || stream.name}</h2>
+          <p className="subhead">
+            {stream.program?.title ? stream.name : <em>No guide data</em>}
           </p>
         </div>
+      </div>
 
-        <div className="viewers">
-          <b>{stream.clientCount}</b>
-          <span>{stream.clientCount === 1 ? 'viewer' : 'viewers'}</span>
+      {stream.program?.start && stream.program?.end && (
+        <>
+          <div className="elapsed">
+            <i style={{ width: `${pct}%` }} />
+          </div>
+          <div className="elapsed-times">
+            <span>{clock(stream.program.start)}</span>
+            <span className="elapsed-remaining">{left ? `${left} left` : 'ending soon'}</span>
+            <span>{clock(stream.program.end)}</span>
+          </div>
+        </>
+      )}
+
+      {stream.nextProgram?.title && (
+        <p className="next-up">
+          <span className="next-label">Next</span>
+          <span className="next-title">{stream.nextProgram.title}</span>
+          {stream.nextProgram.start && <span className="next-time">{clock(stream.nextProgram.start)}</span>}
+        </p>
+      )}
+
+      {primary && (
+        <div className="device-band" data-health={bar}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="2" y="4" width="20" height="14" rx="2" />
+            <path d="M8 21h8M12 18v3" />
+          </svg>
+          <div className="device-info">
+            <div className="device-name">{device || 'Unknown device'}</div>
+            <div className="device-state">
+              {bar === 'fault' ? 'Stream error' : bar === 'warn' ? 'Buffering' : 'Playing'}
+              {upFor ? ` — up ${upFor}` : ''}
+            </div>
+          </div>
+          <div className="conn">
+            {connection && <div>{connection}</div>}
+            {mbps(stream.bitrateKbps) && <div>{mbps(stream.bitrateKbps)}</div>}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="meta">
-        {bar === 'fault' && <span className="chip fault">Stream error</span>}
-        {bar === 'warn' && <span className="chip warn">Buffering</span>}
-        {mbps(stream.bitrateKbps) && <span className="chip">{mbps(stream.bitrateKbps)}</span>}
-        {stream.resolution && <span className="chip">{stream.resolution}</span>}
-        {stream.videoCodec && <span className="chip">{stream.videoCodec}</span>}
-        {duration(stream.uptimeSec) && <span className="chip">up {duration(stream.uptimeSec)}</span>}
-        {stream.streamName && stream.streamName !== stream.name && (
-          <span className="chip">{stream.streamName}</span>
-        )}
-      </div>
+      {(video || videoRelay) && (
+        <div className="info-row">
+          <span className="info-label">Video</span>
+          <div>
+            {video && <div>{video}</div>}
+            {videoRelay && (
+              <div className={`relay ${videoRelay.tone}`}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M17 8l4 4-4 4M3 12h18" />
+                </svg>
+                {videoRelay.text}
+              </div>
+            )}
+            {speed != null && (
+              <div className={`relay ${speedBehind ? 'warn' : ''}`}>
+                {speedBehind && (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M12 9v4M12 17h.01M10.3 3.86L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.86a2 2 0 0 0-3.4 0z" />
+                  </svg>
+                )}
+                {speed.toFixed(2)}x realtime
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {(audio || audioRelay) && (
+        <div className="info-row">
+          <span className="info-label">Audio</span>
+          <div>
+            {audio && <div>{audio}</div>}
+            {audioRelay && (
+              <div className={`relay ${audioRelay.tone}`}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M17 8l4 4-4 4M3 12h18" />
+                </svg>
+                {audioRelay.text}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
-      {stream.clients.length > 0 && (
-        <ul className="clients">
-          {stream.clients.map((c) => (
-            <li key={c.id}>
-              <span>{c.user || c.ip || 'Unknown client'}</span>
-              <span>{duration(c.connectedSec) || ''}</span>
+      {primary && (
+        <div className="card-footer">
+          <span className="avatar" style={{ background: avatarColor(primary.user || primary.ip || primary.id) }}>
+            {(primary.user || primary.ip || '?').slice(0, 1).toUpperCase()}
+          </span>
+          <span className="viewer-id">
+            <span className="viewer-name">{primary.user || 'Unknown viewer'}</span>
+            {primary.ip && <span className="viewer-ip">{primary.ip}</span>}
+          </span>
+          {extra > 0 && <span className="more">+{extra} more watching</span>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function LiveView({ data, error, staleSince, onRetry }) {
+  const totals = data?.totals;
+  const instances = data?.instances || [];
+
+  return (
+    <>
+      {totals && (
+        <div className="tally">
+          <span>
+            <b>{totals.streams}</b> {totals.streams === 1 ? 'stream' : 'streams'}
+          </span>
+          <span>
+            <b>{totals.clients}</b> {totals.clients === 1 ? 'viewer' : 'viewers'}
+          </span>
+          {mbps(totals.bitrateKbps) && (
+            <span>
+              <b>{mbps(totals.bitrateKbps)}</b> total
+            </span>
+          )}
+        </div>
+      )}
+
+      {instances.length > 0 && (
+        <div className="instances">
+          {instances.map((inst) => (
+            <section key={inst.id} className="instance-group">
+              <div className="instance-head">
+                <span className="pulse-sm" data-state={inst.ok ? 'live' : 'down'} aria-hidden="true" />
+                <span className="instance-name">{inst.name}</span>
+                {inst.ok && (
+                  <span className="instance-totals">
+                    {inst.totals.streams} {inst.totals.streams === 1 ? 'stream' : 'streams'} ·{' '}
+                    {inst.totals.clients} {inst.totals.clients === 1 ? 'viewer' : 'viewers'}
+                  </span>
+                )}
+              </div>
+
+              {!inst.ok && <p className="instance-error">{inst.error}</p>}
+
+              {inst.ok && inst.streams.length > 0 && (
+                <ul className="cards">
+                  {inst.streams.map((s) => (
+                    <Stream key={s.key} stream={s} instanceId={inst.id} />
+                  ))}
+                </ul>
+              )}
+
+              {inst.ok && inst.streams.length === 0 && <p className="instance-empty">Nothing playing</p>}
+            </section>
+          ))}
+        </div>
+      )}
+
+      {data && instances.length === 0 && !error && (
+        <div className="notice">
+          <h2>No Dispatcharr instances configured</h2>
+          <p>Add one from the menu (Settings) to start seeing live streams here.</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="notice">
+          <h2>{data ? 'Reconnecting' : 'Cannot reach the server'}</h2>
+          <p>{error}</p>
+          <button className="retry" type="button" onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      )}
+
+      {staleSince && (
+        <p className="foot">last good read {clock(new Date(staleSince).toISOString())}</p>
+      )}
+    </>
+  );
+}
+
+function timeAgo(iso) {
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return 'just now';
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function eventMessage(e) {
+  const who = e.user || e.ip || 'A viewer';
+  switch (e.type) {
+    case 'client_connect':
+      return `${who} connected`;
+    case 'client_disconnect': {
+      const parts = [duration(e.durationSec), gigabytes(e.bytes)].filter(Boolean);
+      return `${who} disconnected${parts.length ? ` — ${parts.join(', ')}` : ''}`;
+    }
+    case 'channel_start':
+      return `Started${e.streamName ? ` — ${e.streamName}` : ''}`;
+    case 'channel_stop':
+      return `Stopped${duration(e.durationSec) ? ` after ${duration(e.durationSec)}` : ''}`;
+    case 'channel_error':
+      return `Error — ${e.errorType || 'unknown'}${e.attempts ? ` (attempt ${e.attempts})` : ''}`;
+    case 'channel_buffering':
+      return `Buffering${e.speed != null ? ` — ${e.speed.toFixed(2)}x realtime` : ''}`;
+    case 'channel_reconnect':
+      return `Reconnecting${e.attempts ? ` (attempt ${e.attempts}${e.maxAttempts ? `/${e.maxAttempts}` : ''})` : ''}`;
+    default:
+      return e.label;
+  }
+}
+
+function HistoryView() {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/history?limit=60');
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server responded ${res.status}`);
+      setEvents(body.events);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, HISTORY_POLL_MS);
+    return () => clearInterval(id);
+  }, [load]);
+
+  return (
+    <>
+      {events?.length > 0 && (
+        <ul className="history">
+          {events.map((e) => (
+            <li key={e.id} className="history-row">
+              <span className={`history-dot tone-${e.tone}`} aria-hidden="true" />
+              <div className="history-body">
+                <div className="history-main">
+                  {e.instanceName && <span className="history-instance">{e.instanceName}</span>}
+                  {e.channelName && <span className="history-channel">{e.channelName}</span>}
+                  <span className="history-msg">{eventMessage(e)}</span>
+                </div>
+                <div className="history-time">{timeAgo(e.at)}</div>
+              </div>
             </li>
           ))}
         </ul>
       )}
 
-      <div className="signal" data-health={bar}>
-        <i style={{ width: `${level}%` }} />
+      {events && events.length === 0 && !error && (
+        <div className="notice">
+          <h2>No recent activity</h2>
+          <p>Nothing logged yet — connects, disconnects and stream errors will show up here.</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="notice">
+          <h2>Cannot reach Dispatcharr</h2>
+          <p>{error}</p>
+          <button className="retry" type="button" onClick={load}>
+            Try again
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+const EMPTY_FORM = { name: '', url: '', username: '', password: '' };
+
+function InstanceForm({ initial, onSubmit, onCancel, submitLabel }) {
+  const [form, setForm] = useState(initial || EMPTY_FORM);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const isEdit = Boolean(initial);
+
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const test = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/instances/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      setTestResult(await res.json());
+    } catch (err) {
+      setTestResult({ ok: false, error: err.message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(form);
+    } catch (err) {
+      setError(err.message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="instance-form" onSubmit={submit}>
+      <label>
+        Name
+        <input value={form.name} onChange={set('name')} placeholder="Living Room" />
+      </label>
+      <label>
+        URL
+        <input value={form.url} onChange={set('url')} placeholder="http://192.168.0.150:9090" required />
+      </label>
+      <label>
+        Username
+        <input value={form.username} onChange={set('username')} required />
+      </label>
+      <label>
+        Password
+        <input
+          type="password"
+          value={form.password}
+          onChange={set('password')}
+          placeholder={isEdit ? 'Leave blank to keep existing' : ''}
+          required={!isEdit}
+        />
+      </label>
+
+      {testResult && (
+        <p className={`test-result ${testResult.ok ? 'ok' : 'fault'}`}>
+          {testResult.ok ? 'Connected successfully.' : testResult.error}
+        </p>
+      )}
+      {error && <p className="test-result fault">{error}</p>}
+
+      <div className="form-actions">
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={test}
+          disabled={testing || !form.url || !form.username}
+        >
+          {testing ? 'Testing…' : 'Test connection'}
+        </button>
+        <div className="form-actions-right">
+          {onCancel && (
+            <button type="button" className="btn ghost" onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+          <button type="submit" className="btn primary" disabled={saving}>
+            {saving ? 'Saving…' : submitLabel}
+          </button>
+        </div>
       </div>
-    </li>
+    </form>
+  );
+}
+
+function SettingsView() {
+  const [instances, setInstances] = useState(null);
+  const [error, setError] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/instances');
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Server responded ${res.status}`);
+      setInstances(body.instances);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const addInstance = async (form) => {
+    const res = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server responded ${res.status}`);
+    setAdding(false);
+    load();
+  };
+
+  const editInstance = async (id, form) => {
+    const res = await fetch(`/api/instances/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server responded ${res.status}`);
+    setEditingId(null);
+    load();
+  };
+
+  const deleteInstance = async (id) => {
+    await fetch(`/api/instances/${id}`, { method: 'DELETE' });
+    setConfirmDeleteId(null);
+    load();
+  };
+
+  return (
+    <>
+      <h2 className="section-title">Dispatcharr instances</h2>
+
+      {instances?.length > 0 && (
+        <ul className="instance-list">
+          {instances.map((inst) =>
+            editingId === inst.id ? (
+              <li key={inst.id} className="instance-list-row editing">
+                <InstanceForm
+                  initial={{ name: inst.name, url: inst.url, username: inst.username, password: '' }}
+                  submitLabel="Save"
+                  onCancel={() => setEditingId(null)}
+                  onSubmit={(form) => editInstance(inst.id, form)}
+                />
+              </li>
+            ) : (
+              <li key={inst.id} className="instance-list-row">
+                <div className="instance-list-info">
+                  <div className="instance-list-name">{inst.name}</div>
+                  <div className="instance-list-url">
+                    {inst.url} · {inst.username}
+                  </div>
+                </div>
+                <div className="instance-list-actions">
+                  <button type="button" className="btn ghost" onClick={() => setEditingId(inst.id)}>
+                    Edit
+                  </button>
+                  {confirmDeleteId === inst.id ? (
+                    <>
+                      <span className="confirm-label">Delete?</span>
+                      <button type="button" className="btn fault" onClick={() => deleteInstance(inst.id)}>
+                        Yes
+                      </button>
+                      <button type="button" className="btn ghost" onClick={() => setConfirmDeleteId(null)}>
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className="btn ghost" onClick={() => setConfirmDeleteId(inst.id)}>
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </li>
+            )
+          )}
+        </ul>
+      )}
+
+      {instances && instances.length === 0 && !adding && (
+        <p className="instance-empty">No instances yet — add one below.</p>
+      )}
+
+      {error && (
+        <div className="notice">
+          <h2>Cannot reach the server</h2>
+          <p>{error}</p>
+        </div>
+      )}
+
+      {adding ? (
+        <InstanceForm submitLabel="Add" onCancel={() => setAdding(false)} onSubmit={addInstance} />
+      ) : (
+        <button type="button" className="btn primary add-instance" onClick={() => setAdding(true)}>
+          + Add instance
+        </button>
+      )}
+    </>
   );
 }
 
 export default function App() {
+  const [tab, setTab] = useState('live');
+  const [navOpen, setNavOpen] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [staleSince, setStaleSince] = useState(null);
@@ -139,68 +670,47 @@ export default function App() {
   }, [load]);
 
   const state = error ? (data ? 'stale' : 'down') : 'live';
-  const totals = data?.totals;
 
   return (
     <>
       <header className="masthead">
+        <button className="hamburger" type="button" onClick={() => setNavOpen(true)} aria-label="Open menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M3 6h18M3 12h18M3 18h18" />
+          </svg>
+        </button>
         <h1>
           <span className="pulse" data-state={state} aria-hidden="true" />
           On now
         </h1>
-        {data && <span className="foot">{clock(data.updatedAt)}</span>}
+        {tab === 'live' && data && <span className="foot">{clock(data.updatedAt)}</span>}
       </header>
 
-      {totals && (
-        <div className="tally">
-          <span>
-            <b>{totals.streams}</b> {totals.streams === 1 ? 'stream' : 'streams'}
-          </span>
-          <span>
-            <b>{totals.clients}</b> {totals.clients === 1 ? 'viewer' : 'viewers'}
-          </span>
-          {mbps(totals.bitrateKbps) && (
-            <span>
-              <b>{mbps(totals.bitrateKbps)}</b> total
-            </span>
-          )}
-        </div>
+      {navOpen && (
+        <>
+          <div className="scrim" onClick={() => setNavOpen(false)} />
+          <nav className="drawer">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="drawer-item"
+                data-active={tab === item.id}
+                onClick={() => {
+                  setTab(item.id);
+                  setNavOpen(false);
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </>
       )}
 
-      {data?.streams?.length > 0 && (
-        <ul className="rows">
-          {data.streams.map((s) => (
-            <Stream key={s.key} stream={s} />
-          ))}
-        </ul>
-      )}
-
-      {data && data.streams.length === 0 && !error && (
-        <div className="notice">
-          <h2>Nothing is streaming</h2>
-          <p>
-            Dispatcharr has no active connections right now. Start a channel on any client and
-            it will appear here within a few seconds.
-          </p>
-        </div>
-      )}
-
-      {error && (
-        <div className="notice">
-          <h2>{data ? 'Reconnecting to Dispatcharr' : 'Cannot reach Dispatcharr'}</h2>
-          <p>{error}</p>
-          <button className="retry" type="button" onClick={load}>
-            Try again
-          </button>
-        </div>
-      )}
-
-      {data?.source && (
-        <p className="foot">
-          Reading <code>{data.source}</code>
-          {staleSince ? ` — last good read ${clock(new Date(staleSince).toISOString())}` : ''}
-        </p>
-      )}
+      {tab === 'live' && <LiveView data={data} error={error} staleSince={staleSince} onRetry={load} />}
+      {tab === 'history' && <HistoryView />}
+      {tab === 'settings' && <SettingsView />}
     </>
   );
 }
