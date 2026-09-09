@@ -1,0 +1,10 @@
+{
+  "name": "On now",
+  "short_name": "On now",
+  "description": "Live view of what is playing through Dispatcharr",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#151C24",
+  "theme_color": "#151C24",
+  "orientation": "portrait"
+}

@@ -1,0 +1,9 @@
+services:
+  dispatcharr-now:
+    build: .
+    container_name: dispatcharr-now
+    restart: unless-stopped
+    ports:
+      - "8790:8790"
+    env_file:
+      - .env
