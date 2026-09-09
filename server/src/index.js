@@ -8,7 +8,7 @@ import * as store from './instances.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const {
-  DISPATCHARR_URL = 'http://192.168.0.149:9090',
+  DISPATCHARR_URL = 'http://192.168.1.100:9090',
   DISPATCHARR_USER,
   DISPATCHARR_PASS,
   PORT = 8790,
