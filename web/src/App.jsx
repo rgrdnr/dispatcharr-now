@@ -94,6 +94,29 @@ function parseAgent(ua) {
   return ua.length > 30 ? `${ua.slice(0, 30)}…` : ua;
 }
 
+/** iPadOS reports as "MacIntel" but, unlike a real Mac, has touch support. */
+function isIOS() {
+  if (typeof navigator === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+/**
+ * VLC for iOS registers vlc-x-callback:// itself. Desktop VLC doesn't
+ * register vlc:// out of the box, but this machine has the
+ * stefansundin/vlc-protocol handler installed (a real macOS app + a
+ * one-time Automation permission grant), so vlc:// works here too — a
+ * plain video/mp2t link would otherwise just download as an extensionless
+ * blob in Chrome. On a machine without that handler installed, the vlc://
+ * link will silently do nothing; there's no way to detect that from the
+ * page, so this app assumes it's present rather than falling back.
+ */
+function vlcHref(stream) {
+  if (isIOS()) {
+    return `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(stream.watchUrl)}`;
+  }
+  return `vlc://${stream.watchUrl}`;
+}
+
 function avatarColor(seed) {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
@@ -112,7 +135,7 @@ function Stream({ stream, instanceId }) {
   const left = timeLeft(stream.program?.end);
   const bar = health(stream);
   const primary = stream.clients[0] || null;
-  const extra = stream.clients.length - 1;
+  const extraClients = stream.clients.slice(1);
 
   const device = primary ? parseAgent(primary.userAgent) : null;
   const connection = primary?.local === true ? 'Local' : primary?.local === false ? 'Remote' : null;
@@ -227,16 +250,34 @@ function Stream({ stream, instanceId }) {
         </div>
       )}
 
-      {primary && (
+      {(primary || stream.watchUrl) && (
         <div className="card-footer">
-          <span className="avatar" style={{ background: avatarColor(primary.user || primary.ip || primary.id) }}>
-            {(primary.user || primary.ip || '?').slice(0, 1).toUpperCase()}
+          {primary && (
+            <>
+              <span className="avatar" style={{ background: avatarColor(primary.user || primary.ip || primary.id) }}>
+                {(primary.user || primary.ip || '?').slice(0, 1).toUpperCase()}
+              </span>
+              <span className="viewer-id">
+                <span className="viewer-name">{primary.user || 'Unknown viewer'}</span>
+                {primary.ip && <span className="viewer-ip">{primary.ip}</span>}
+              </span>
+            </>
+          )}
+          <span className="footer-actions">
+            {extraClients.length > 0 && (
+              <span className="more">
+                +{extraClients.length} more — {extraClients.map((c) => c.ip || c.user || 'unknown').join(', ')}
+              </span>
+            )}
+            {stream.watchUrl && (
+              <a className="vlc-link" href={vlcHref(stream)} aria-label={`Open ${stream.name} in VLC`}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M5 3l15 9-15 9V3z" />
+                </svg>
+                VLC
+              </a>
+            )}
           </span>
-          <span className="viewer-id">
-            <span className="viewer-name">{primary.user || 'Unknown viewer'}</span>
-            {primary.ip && <span className="viewer-ip">{primary.ip}</span>}
-          </span>
-          {extra > 0 && <span className="more">+{extra} more watching</span>}
         </div>
       )}
     </li>

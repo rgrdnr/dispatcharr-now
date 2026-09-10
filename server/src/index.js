@@ -71,6 +71,13 @@ async function collectOne(id, name, client) {
       })
     );
 
+    // Dispatcharr's HDHomeRun-emulation stream endpoint needs no auth at
+    // all (verified against a live instance) — safe to hand straight to an
+    // external player like VLC, unlike everything else in this API.
+    for (const s of result.streams) {
+      s.watchUrl = s.channelUuid ? `${client.baseUrl}/proxy/ts/stream/${s.channelUuid}?output_profile=1` : null;
+    }
+
     return { id, name, ok: true, source: statusPath, ...result };
   } catch (err) {
     return { id, name, ok: false, error: err.message };
@@ -166,6 +173,43 @@ app.get('/api/logo/:instanceId/:channelId', async (req, res) => {
     res.send(Buffer.from(await upstream.arrayBuffer()));
   } catch {
     res.status(502).end();
+  }
+});
+
+// Full channel catalog for one instance — not used by this app's own UI
+// (/api/now already tells us who's live), but lets another client (e.g. a
+// dashboard widget) let a user browse/search channels once to build a
+// static favorites list. Reuses channels()'s existing 5-minute cache.
+app.get('/api/instances/:id/channels', async (req, res) => {
+  try {
+    syncPool(); // don't depend on /api/now having warmed the pool first
+    const client = clients.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'Not found.' });
+
+    const { byId } = await client.channels();
+    const q = String(req.query.q || '').trim().toLowerCase();
+
+    const list = Array.from(byId.values())
+      .map((c) => ({
+        id: String(c.id),
+        uuid: c.uuid ?? null,
+        name: c.name || c.channel_name || `Channel ${c.id}`,
+        number: c.channel_number ?? c.number ?? null,
+        logoId: c.logo_id ?? null,
+      }))
+      .filter((c) => c.uuid) // no uuid means no watchUrl is possible — not favoritable
+      .filter((c) => !q || c.name.toLowerCase().includes(q) || String(c.number ?? '').includes(q));
+
+    list.sort((a, b) => {
+      const an = Number(a.number);
+      const bn = Number(b.number);
+      if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+      return a.name.localeCompare(b.name);
+    });
+
+    res.json({ channels: list });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
   }
 });
 

@@ -556,7 +556,8 @@ body {
 .card-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   padding: 10px 12px;
   border-top: 1px solid var(--edge);
 }
@@ -594,11 +595,35 @@ body {
   color: var(--dim-2);
 }
 
-.card-footer .more {
+.footer-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
   margin-left: auto;
-  flex: 0 0 auto;
+}
+
+.footer-actions .more {
   color: var(--dim-2);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
+.vlc-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--live);
+  text-decoration: none;
+  padding: 3px 8px;
+  border: 1px solid rgba(111, 211, 154, 0.3);
+  border-radius: 999px;
+}
+
+.vlc-link:active {
+  background: rgba(111, 211, 154, 0.12);
 }
 
 /* ---------- history ---------- */
