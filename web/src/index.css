@@ -894,7 +894,8 @@ button.retry:active {
   color: var(--dim);
 }
 
-.instance-form input {
+.instance-form input,
+.instance-form select {
   font: inherit;
   font-size: 0.9rem;
   color: var(--paper);
@@ -904,9 +905,21 @@ button.retry:active {
   padding: 0.5rem 0.6rem;
 }
 
-.instance-form input:focus-visible {
+.instance-form input:focus-visible,
+.instance-form select:focus-visible {
   outline: 2px solid var(--live);
   outline-offset: 1px;
+}
+
+.player-form {
+  margin-bottom: 1.5rem;
+}
+
+.settings-hint {
+  max-width: 40rem;
+  margin: 0 auto 0.8rem;
+  font-size: 0.78rem;
+  color: var(--dim);
 }
 
 .test-result {

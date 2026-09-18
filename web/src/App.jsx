@@ -4,6 +4,7 @@ const POLL_MS = 5000;
 const HISTORY_POLL_MS = 20000;
 const ORDER_KEY = 'onnow.instanceOrder';
 const COLLAPSED_KEY = 'onnow.collapsedInstances';
+const PLAYER_KEY = 'onnow.player';
 
 const NAV_ITEMS = [
   { id: 'live', label: 'Live' },
@@ -100,6 +101,13 @@ function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
+function getPreferredPlayer() {
+  if (typeof localStorage === 'undefined') return 'vlc';
+  return localStorage.getItem(PLAYER_KEY) === 'channels' ? 'channels' : 'vlc';
+}
+
+const PLAYER_LABELS = { vlc: 'VLC', channels: 'Channels' };
+
 /**
  * VLC for iOS registers vlc-x-callback:// itself. Desktop VLC doesn't
  * register vlc:// out of the box, but this machine has the
@@ -109,8 +117,19 @@ function isIOS() {
  * blob in Chrome. On a machine without that handler installed, the vlc://
  * link will silently do nothing; there's no way to detect that from the
  * page, so this app assumes it's present rather than falling back.
+ *
+ * Channels (getchannels.com) deep-links to a channel by its guide *name*,
+ * not its guide number — confirmed against a live server: an M3U-imported
+ * channel's `id` in Channels DVR is the same string as the channel's name,
+ * so Dispatcharr's own channel name already matches it with no lookup
+ * needed. Only works for channels a Channels DVR server already has
+ * imported (e.g. via M3U from this same Dispatcharr instance), and the
+ * deep link itself is iOS/tvOS only.
  */
-function vlcHref(stream) {
+function launchHref(stream) {
+  if (getPreferredPlayer() === 'channels') {
+    return `channels://play/channel/${encodeURIComponent(stream.name)}`;
+  }
   if (isIOS()) {
     return `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(stream.watchUrl)}`;
   }
@@ -270,11 +289,15 @@ function Stream({ stream, instanceId }) {
               </span>
             )}
             {stream.watchUrl && (
-              <a className="vlc-link" href={vlcHref(stream)} aria-label={`Open ${stream.name} in VLC`}>
+              <a
+                className="vlc-link"
+                href={launchHref(stream)}
+                aria-label={`Open ${stream.name} in ${PLAYER_LABELS[getPreferredPlayer()]}`}
+              >
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M5 3l15 9-15 9V3z" />
                 </svg>
-                VLC
+                {PLAYER_LABELS[getPreferredPlayer()]}
               </a>
             )}
           </span>
@@ -725,6 +748,12 @@ function SettingsView() {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [player, setPlayerState] = useState(getPreferredPlayer);
+
+  const setPlayer = (value) => {
+    localStorage.setItem(PLAYER_KEY, value);
+    setPlayerState(value);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -774,6 +803,24 @@ function SettingsView() {
 
   return (
     <>
+      <h2 className="section-title">Player</h2>
+      <p className="settings-hint">Which app the VLC/Channels button on a stream launches on this device.</p>
+      <form className="instance-form player-form" onSubmit={(e) => e.preventDefault()}>
+        <label>
+          Default player
+          <select value={player} onChange={(e) => setPlayer(e.target.value)}>
+            <option value="vlc">VLC</option>
+            <option value="channels">Channels</option>
+          </select>
+        </label>
+        {player === 'channels' && (
+          <p className="settings-hint">
+            Only works for channels already imported into a Channels DVR server (e.g. via M3U from this
+            Dispatcharr instance), and only from iOS/tvOS — Channels has no desktop deep link.
+          </p>
+        )}
+      </form>
+
       <h2 className="section-title">Dispatcharr instances</h2>
 
       {instances?.length > 0 && (
