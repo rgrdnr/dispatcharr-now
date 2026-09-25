@@ -216,8 +216,8 @@ app.get('/api/instances/:id/channels', async (req, res) => {
 // Current + next EPG programme for a specific set of channels (comma-separated
 // channel ids in ?ids=). /api/now only carries programmes for streams that are
 // playing right now; this lets a client show a guide for channels nobody is
-// watching, e.g. a dashboard's favorites page. Reuses the one-minute
-// current-programs cache; only the per-channel "next" lookup is a live call.
+// watching, e.g. a dashboard's favorites page. Answers are cached per channel
+// until the current programme ends, so repeat requests cost nothing.
 app.get('/api/instances/:id/programs', async (req, res) => {
   try {
     syncPool();
@@ -230,18 +230,8 @@ app.get('/api/instances/:id/programs', async (req, res) => {
       .filter(Boolean)
       .slice(0, 100);
 
-    const [{ byId }, programs] = await Promise.all([client.channels(), client.currentPrograms()]);
-
-    const list = await Promise.all(
-      ids.map(async (id) => {
-        const channel = byId.get(id);
-        if (!channel) return { id, current: null, next: null };
-        const current = normalizeProgram(channel.uuid ? programs.get(String(channel.uuid)) : null);
-        const after = current?.end || new Date().toISOString();
-        const next = normalizeProgram(await client.nextProgram(channel.id, after));
-        return { id, current, next };
-      })
-    );
+    const { byId } = await client.channels();
+    const list = await client.channelPrograms(byId, ids);
 
     res.json({ programs: list });
   } catch (err) {
@@ -305,15 +295,15 @@ app.use(express.static(webRoot));
 app.get('*', (req, res) => res.sendFile(path.join(webRoot, 'index.html')));
 
 // Keep each instance's guide warm, so the first request after a quiet spell
-// doesn't pay the multi-second full-guide fetch. One ~1MB request a minute per
-// instance, and none at all for a build that has no programmes endpoint.
+// doesn't pay the multi-second full-guide fetch. One ~1MB request every five
+// minutes per instance, and none at all for a build with no programmes endpoint.
 function warmPrograms() {
   for (const { client } of activeInstances()) {
     if (client.programsSupported) client.refreshPrograms();
   }
 }
 warmPrograms();
-setInterval(warmPrograms, 60 * 1000).unref();
+setInterval(warmPrograms, 5 * 60 * 1000).unref();
 
 app.listen(PORT, () => {
   console.log(`Watching ${store.list().length} Dispatcharr instance(s) — open http://localhost:${PORT}`);

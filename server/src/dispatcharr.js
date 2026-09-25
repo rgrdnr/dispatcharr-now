@@ -32,7 +32,7 @@ const logoPath = (id) => `/api/channels/logos/${id}/`;
 
 const FIVE_MIN = 5 * 60 * 1000;
 const ONE_MIN = 60 * 1000;
-const TEN_MIN = 10 * 60 * 1000;
+const FIFTEEN_MIN = 15 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
 export class Dispatcharr {
@@ -54,6 +54,7 @@ export class Dispatcharr {
     this.profileCache = { at: 0, byId: new Map() };
     this.programCache = { at: 0, byUuid: new Map() };
     this.programsInflight = null;
+    this.channelProgramCache = new Map(); // channelId -> { value: { current, next }, validUntil }
     this.logoCache = new Map(); // logoId -> { at, url, cacheUrl }
   }
 
@@ -246,18 +247,18 @@ export class Dispatcharr {
    * the join key this endpoint actually returns — not a channel id). The
    * payload is the whole guide's current slice (~1MB) and this build ignores
    * any filtering we send it, so there's no cheaper call to make; on a real
-   * instance it takes several seconds. So it's stale-while-revalidate: a
-   * cache under a minute old is served as-is, one up to ten minutes old is
-   * served immediately while a refresh runs behind it, and only a cold or
-   * long-idle cache makes a caller wait. Degrades to an empty map if the
-   * endpoint isn't there at all.
+   * instance it takes several seconds. Programmes run 30+ minutes, so it's
+   * stale-while-revalidate on a generous clock: a cache under five minutes old
+   * is served as-is, one up to fifteen is served immediately while a refresh
+   * runs behind it, and only a cold or long-idle cache makes a caller wait.
+   * Degrades to an empty map if the endpoint isn't there at all.
    */
   async currentPrograms() {
     if (!this.programsSupported) return new Map();
     const age = Date.now() - this.programCache.at;
     const have = this.programCache.byUuid.size > 0;
-    if (have && age < ONE_MIN) return this.programCache.byUuid;
-    if (have && age < TEN_MIN) {
+    if (have && age < FIVE_MIN) return this.programCache.byUuid;
+    if (have && age < FIFTEEN_MIN) {
       this.refreshPrograms();
       return this.programCache.byUuid;
     }
@@ -313,6 +314,56 @@ export class Dispatcharr {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Current + next programme for specific channels (`ids` are channel ids;
+   * `byId` is channels().byId). A channel's answer can't change until its
+   * current programme ends, so it's cached until then (at most fifteen
+   * minutes; a channel with no guide data is rechecked after five). Only a
+   * channel that has never been asked about, or whose programme has ended,
+   * costs anything: one "what's next" lookup — plus, when the guide we hold
+   * predates that programme's end, one shared refresh of the whole guide first.
+   */
+  async channelPrograms(byId, ids) {
+    const now = Date.now();
+    const answers = new Map();
+    const todo = [];
+    for (const id of ids) {
+      const hit = this.channelProgramCache.get(id);
+      if (hit && now < hit.validUntil) answers.set(id, hit.value);
+      else todo.push(id);
+    }
+
+    if (todo.length) {
+      let programs = await this.currentPrograms();
+      const behind = todo.some((id) => {
+        const uuid = byId.get(id)?.uuid;
+        const current = uuid ? normalizeProgram(programs.get(String(uuid))) : null;
+        const end = current?.end ? Date.parse(current.end) : NaN;
+        return Number.isFinite(end) && end <= now && this.programCache.at <= end;
+      });
+      if (behind) programs = await this.refreshPrograms();
+
+      await Promise.all(
+        todo.map(async (id) => {
+          const channel = byId.get(id);
+          let current = channel?.uuid ? normalizeProgram(programs.get(String(channel.uuid))) : null;
+          // Still over even after a refresh: the guide has nothing current for it.
+          if (current?.end && Date.parse(current.end) <= now) current = null;
+          const next = channel
+            ? normalizeProgram(await this.nextProgram(channel.id, current?.end || new Date(now).toISOString()))
+            : null;
+          const value = { current, next };
+          const end = current?.end ? Date.parse(current.end) : NaN;
+          const validUntil = Number.isFinite(end) ? Math.min(end, now + FIFTEEN_MIN) : now + FIVE_MIN;
+          this.channelProgramCache.set(id, { value, validUntil });
+          answers.set(id, value);
+        })
+      );
+    }
+
+    return ids.map((id) => ({ id, ...answers.get(id) }));
   }
 
   /** Recent connect/disconnect/error/buffering events, newest first. Not cached — only fetched when the history view is open. */
