@@ -304,6 +304,17 @@ const webRoot = path.join(__dirname, '../../web/dist');
 app.use(express.static(webRoot));
 app.get('*', (req, res) => res.sendFile(path.join(webRoot, 'index.html')));
 
+// Keep each instance's guide warm, so the first request after a quiet spell
+// doesn't pay the multi-second full-guide fetch. One ~1MB request a minute per
+// instance, and none at all for a build that has no programmes endpoint.
+function warmPrograms() {
+  for (const { client } of activeInstances()) {
+    if (client.programsSupported) client.refreshPrograms();
+  }
+}
+warmPrograms();
+setInterval(warmPrograms, 60 * 1000).unref();
+
 app.listen(PORT, () => {
   console.log(`Watching ${store.list().length} Dispatcharr instance(s) — open http://localhost:${PORT}`);
 });

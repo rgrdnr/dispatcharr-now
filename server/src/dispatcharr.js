@@ -32,6 +32,7 @@ const logoPath = (id) => `/api/channels/logos/${id}/`;
 
 const FIVE_MIN = 5 * 60 * 1000;
 const ONE_MIN = 60 * 1000;
+const TEN_MIN = 10 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
 export class Dispatcharr {
@@ -52,6 +53,7 @@ export class Dispatcharr {
     this.userCache = { at: 0, byId: new Map() };
     this.profileCache = { at: 0, byId: new Map() };
     this.programCache = { at: 0, byUuid: new Map() };
+    this.programsInflight = null;
     this.logoCache = new Map(); // logoId -> { at, url, cacheUrl }
   }
 
@@ -241,16 +243,38 @@ export class Dispatcharr {
 
   /**
    * Current EPG program per channel, keyed by the channel's `uuid` (that's
-   * the join key this endpoint actually returns — not a channel id). Cached
-   * for a minute: the payload is the whole guide's current slice (~1MB) and
-   * this build ignores any filtering we send it, so there's no cheaper call
-   * to make. Degrades to an empty map if the endpoint isn't there at all.
+   * the join key this endpoint actually returns — not a channel id). The
+   * payload is the whole guide's current slice (~1MB) and this build ignores
+   * any filtering we send it, so there's no cheaper call to make; on a real
+   * instance it takes several seconds. So it's stale-while-revalidate: a
+   * cache under a minute old is served as-is, one up to ten minutes old is
+   * served immediately while a refresh runs behind it, and only a cold or
+   * long-idle cache makes a caller wait. Degrades to an empty map if the
+   * endpoint isn't there at all.
    */
   async currentPrograms() {
     if (!this.programsSupported) return new Map();
-    if (Date.now() - this.programCache.at < ONE_MIN && this.programCache.byUuid.size) {
+    const age = Date.now() - this.programCache.at;
+    const have = this.programCache.byUuid.size > 0;
+    if (have && age < ONE_MIN) return this.programCache.byUuid;
+    if (have && age < TEN_MIN) {
+      this.refreshPrograms();
       return this.programCache.byUuid;
     }
+    return this.refreshPrograms();
+  }
+
+  /** One refresh in flight at a time, shared by every caller. Never rejects. */
+  refreshPrograms() {
+    if (!this.programsInflight) {
+      this.programsInflight = this.fetchCurrentPrograms().finally(() => {
+        this.programsInflight = null;
+      });
+    }
+    return this.programsInflight;
+  }
+
+  async fetchCurrentPrograms() {
     try {
       const data = await this.call(CURRENT_PROGRAMS_PATH, {
         method: 'POST',
@@ -264,9 +288,12 @@ export class Dispatcharr {
       }
       this.programCache = { at: Date.now(), byUuid };
       return byUuid;
-    } catch {
-      this.programsSupported = false;
-      return new Map();
+    } catch (err) {
+      // Only an endpoint that isn't there means "unsupported". A timeout or a
+      // 5xx is transient: keep the last guide we had and try again next time,
+      // rather than switching programmes off until the container restarts.
+      if (err && [404, 405, 501].includes(err.status)) this.programsSupported = false;
+      return this.programCache.byUuid;
     }
   }
 
