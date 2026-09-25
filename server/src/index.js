@@ -213,6 +213,42 @@ app.get('/api/instances/:id/channels', async (req, res) => {
   }
 });
 
+// Current + next EPG programme for a specific set of channels (comma-separated
+// channel ids in ?ids=). /api/now only carries programmes for streams that are
+// playing right now; this lets a client show a guide for channels nobody is
+// watching, e.g. a dashboard's favorites page. Reuses the one-minute
+// current-programs cache; only the per-channel "next" lookup is a live call.
+app.get('/api/instances/:id/programs', async (req, res) => {
+  try {
+    syncPool();
+    const client = clients.get(req.params.id);
+    if (!client) return res.status(404).json({ error: 'Not found.' });
+
+    const ids = String(req.query.ids || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+
+    const [{ byId }, programs] = await Promise.all([client.channels(), client.currentPrograms()]);
+
+    const list = await Promise.all(
+      ids.map(async (id) => {
+        const channel = byId.get(id);
+        if (!channel) return { id, current: null, next: null };
+        const current = normalizeProgram(channel.uuid ? programs.get(String(channel.uuid)) : null);
+        const after = current?.end || new Date().toISOString();
+        const next = normalizeProgram(await client.nextProgram(channel.id, after));
+        return { id, current, next };
+      })
+    );
+
+    res.json({ programs: list });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // ---------- instance management ----------
 
 app.get('/api/instances', (req, res) => {
